@@ -36,6 +36,9 @@ FEEDS = {
     "H4": ("60m", "3mo", 14400),
     "D1": ("1d", "1y", 86400),
     "W1": ("1wk", "5y", 604800),
+    # longer histories, used only by the backtest
+    "M15_LONG": ("15m", "60d", 900),
+    "H1_LONG": ("60m", "1y", 3600),
 }
 HIGHER_TF = {"M5": "H1", "M15": "H1", "H1": "H4", "H4": "D1", "D1": "W1"}
 
@@ -133,7 +136,8 @@ def _load_bars(symbol: str, tf: str):
 
 
 def get_bars(symbol: str, tf: str):
-    return _cached(f"bars:{symbol}:{tf}", 60, lambda: _load_bars(symbol, tf))
+    ttl = 3600 if tf.endswith("_LONG") else 60
+    return _cached(f"bars:{symbol}:{tf}", ttl, lambda: _load_bars(symbol, tf))
 
 
 def get_calendar():
@@ -190,18 +194,19 @@ def ema(values, n: int) -> float:
 def swings(bars, wing: int = 2):
     """Fractal swing points: a high/low that beats `wing` bars on each side."""
     out = []
+    highs = [b["h"] for b in bars]
+    lows = [b["l"] for b in bars]
     for i in range(wing, len(bars) - wing):
-        window = bars[i - wing:i + wing + 1]
-        if bars[i]["h"] == max(b["h"] for b in window):
-            out.append({"i": i, "t": bars[i]["t"], "kind": "H", "price": bars[i]["h"]})
-        if bars[i]["l"] == min(b["l"] for b in window):
-            out.append({"i": i, "t": bars[i]["t"], "kind": "L", "price": bars[i]["l"]})
+        if highs[i] == max(highs[i - wing:i + wing + 1]):
+            out.append({"i": i, "t": bars[i]["t"], "kind": "H", "price": highs[i]})
+        if lows[i] == min(lows[i - wing:i + wing + 1]):
+            out.append({"i": i, "t": bars[i]["t"], "kind": "L", "price": lows[i]})
     return out
 
 
-def structure(bars):
+def structure(bars, sw=None):
     """Label market structure from the last two swing highs and lows."""
-    sw = swings(bars)
+    sw = swings(bars) if sw is None else sw
     highs = [s for s in sw if s["kind"] == "H"]
     lows = [s for s in sw if s["kind"] == "L"]
     if len(highs) < 2 or len(lows) < 2:
@@ -268,7 +273,7 @@ def _utc(ts: int) -> str:
 
 
 def _day_range(bars, day):
-    rows = [b for b in bars if datetime.fromtimestamp(b["t"], timezone.utc).date() == day]
+    rows = [b for b in bars if b["t"] // 86400 == day]  # day = UTC day number
     if not rows:
         return None
     return {"high": max(b["h"] for b in rows), "low": min(b["l"] for b in rows)}
@@ -282,24 +287,47 @@ def _dedupe(levels, tolerance):
     return kept
 
 
-def analyze(tf: str = "H1", mode: str = "standard"):
-    tf = tf.upper()
-    mode = mode.lower()
+def check_args(tf: str, mode: str):
+    tf, mode = tf.upper(), mode.lower()
     if mode not in MODES:
         raise ValueError(f"unknown mode '{mode}'")
     if tf not in HIGHER_TF:
         raise ValueError(f"unknown timeframe '{tf}'")
+    return tf, mode
+
+
+def analyze(tf: str = "H1", mode: str = "standard"):
+    """Live analysis: fetch every feed, then run the pipeline on it."""
+    tf, mode = check_args(tf, mode)
+    feed, stale = get_bars(GOLD, tf)
+    htf_feed, _ = get_bars(GOLD, HIGHER_TF[tf])
+    h1_feed, _ = get_bars(GOLD, "H1")
+    try:
+        dxy_bars = get_bars(DXY, "H1")[0]["bars"]
+    except Exception:  # noqa: BLE001 - DXY is supporting context only
+        dxy_bars = None
+    try:
+        events, calendar_error = get_calendar()[0], None
+    except Exception as exc:  # noqa: BLE001 - the calendar is optional
+        events, calendar_error = None, str(exc)[:200]
+    return evaluate(tf, mode, feed["bars"], htf_feed["bars"], h1_feed["bars"], dxy_bars,
+                    events, int(time.time()), float(feed["price"]), int(feed["quote_time"]),
+                    feed["name"], stale=stale, calendar_error=calendar_error)
+
+
+def evaluate(tf, mode, bars, htf, h1, dxy_bars, events, now_ts, price, quote_time,
+             feed_name="", stale=False, calendar_error=None, backtest=False):
+    """Run the pipeline on the bars given. Pure: no network, no clock.
+
+    In a backtest `events` is None (no historical calendar) and the chart
+    bars are left out of the result.
+    """
     cfg = MODES[mode]
     htf_name = HIGHER_TF[tf]
-    now = datetime.now(timezone.utc)
-    now_ts = int(now.timestamp())
-
-    feed, stale_tf = get_bars(GOLD, tf)
-    htf_feed, _ = get_bars(GOLD, htf_name)
-    h1_feed, _ = get_bars(GOLD, "H1")
-    bars, htf, h1 = feed["bars"], htf_feed["bars"], h1_feed["bars"]
-    price = float(feed["price"])
-    quote_age_min = max(0, (now_ts - int(feed["quote_time"])) / 60)
+    now = datetime.fromtimestamp(now_ts, timezone.utc)
+    stale_tf = stale
+    feed = {"name": feed_name, "quote_time": quote_time}
+    quote_age_min = max(0, (now_ts - int(quote_time)) / 60)
 
     atr_tf = atr(bars)
     atr_h1 = atr(h1)
@@ -365,8 +393,15 @@ def analyze(tf: str = "H1", mode: str = "standard"):
 
     # ---- 2. news gate ----------------------------------------------------
     news = {"events": [], "next_event": None, "blocked": False, "available": True}
-    try:
-        events, _ = get_calendar()
+    if backtest:
+        news["available"] = False
+        steps.append(_step("news", "News gate", "pass", "Not checked in a backtest."))
+    elif events is None:
+        news["available"] = False
+        news["error"] = calendar_error
+        warnings.append("Economic calendar unavailable - check for USD news yourself.")
+        steps.append(_step("news", "News gate", "warn", "Calendar unavailable - check manually."))
+    else:
         news["events"] = [dict(e, when=_utc(e["time"])) for e in events]
         active = [e for e in events if e["time"] - 7200 <= now_ts <= e["time"] + 3600]
         upcoming = [e for e in events if e["time"] > now_ts]
@@ -385,14 +420,10 @@ def analyze(tf: str = "H1", mode: str = "standard"):
                                else "Clear. No more high-impact USD releases this week.",
                                ["Source: Forex Factory weekly calendar, high-impact USD events only.",
                                 "Unscheduled headlines and Fed speakers are not covered."]))
-    except Exception as exc:  # noqa: BLE001 - the calendar is optional
-        news["available"] = False
-        news["error"] = str(exc)[:200]
-        warnings.append("Economic calendar unavailable - check for USD news yourself.")
-        steps.append(_step("news", "News gate", "warn", "Calendar unavailable - check manually."))
 
     # ---- 3. structure ----------------------------------------------------
-    st = structure(bars)
+    sw_tf, sw_htf = swings(bars), swings(htf)
+    st = structure(bars, sw_tf)
     if regime == "trend-down":
         bias = "flat" if st["label"] == "bullish" else "short"
     elif regime == "trend-up":
@@ -425,13 +456,13 @@ def analyze(tf: str = "H1", mode: str = "standard"):
                            f"{tf} structure {st['label']}; bias {bias}.", struct_details))
 
     # ---- 4. liquidity ----------------------------------------------------
-    today = datetime.fromtimestamp(bars[-1]["t"], timezone.utc).date()
-    prior_days = sorted({datetime.fromtimestamp(b["t"], timezone.utc).date() for b in h1} - {today})
+    today = bars[-1]["t"] // 86400
+    prior_days = sorted({b["t"] // 86400 for b in h1} - {today})
     today_rng = _day_range(h1, today)
     prev_rng = _day_range(h1, prior_days[-1]) if prior_days else None
     pools = []
-    for name, series in ((tf, bars), (htf_name, htf)):
-        for s in swings(series)[-24:]:
+    for name, found in ((tf, sw_tf), (htf_name, sw_htf)):
+        for s in found[-24:]:
             pools.append({"price": s["price"], "side": "high" if s["kind"] == "H" else "low",
                           "label": f"{name} swing {'high' if s['kind'] == 'H' else 'low'}", "t": s["t"]})
     if prev_rng:
@@ -448,8 +479,8 @@ def analyze(tf: str = "H1", mode: str = "standard"):
 
     swept = []
     if today_rng:
-        for s in swings(htf)[-30:]:
-            if datetime.fromtimestamp(s["t"], timezone.utc).date() >= today:
+        for s in sw_htf[-30:]:
+            if s["t"] // 86400 >= today:
                 continue
             if bias == "short" and s["kind"] == "L" and today_rng["low"] < s["price"] < price:
                 swept.append(s["price"])
@@ -472,9 +503,8 @@ def analyze(tf: str = "H1", mode: str = "standard"):
 
     # ---- DXY -------------------------------------------------------------
     dxy_ctx = {"bias": "unknown", "price": None}
-    try:
-        dxy_feed, _ = get_bars(DXY, "H1")
-        d = dxy_feed["bars"]
+    if dxy_bars and len(dxy_bars) >= 30:
+        d = dxy_bars
         d_close = d[-1]["c"]
         d_ema = ema([b["c"] for b in d], 20)
         d_prev = d[-7]["c"]
@@ -486,8 +516,6 @@ def analyze(tf: str = "H1", mode: str = "standard"):
             dxy_ctx["bias"] = "flat"
         dxy_ctx["price"] = round(d_close, 3)
         dxy_ctx["change_6h"] = round(d_close - d_prev, 3)
-    except Exception:  # noqa: BLE001 - DXY is supporting context only
-        pass
     dxy_supports = ((bias == "short" and dxy_ctx["bias"] == "strengthening")
                     or (bias == "long" and dxy_ctx["bias"] == "weakening"))
     dxy_opposes = ((bias == "short" and dxy_ctx["bias"] == "weakening")
@@ -506,7 +534,7 @@ def analyze(tf: str = "H1", mode: str = "standard"):
             stop_anchor = zone["anchor"]
             entry_source = f"midpoint of the {tf} fair value gap"
         else:
-            sw = swings(bars)
+            sw = sw_tf
             kind = "H" if bias == "short" else "L"
             pivots = [s for s in sw if s["kind"] == kind]
             entry = None
@@ -644,6 +672,7 @@ def analyze(tf: str = "H1", mode: str = "standard"):
         "sizing": {"risk_pct": cfg["risk_pct"], "usd_per_point_per_lot": USD_PER_POINT_PER_LOT},
         "modes": {m: {"risk_pct": c["risk_pct"], "min_rr": c["min_rr"], "tfs": c["tfs"]}
                   for m, c in MODES.items()},
-        "bars": [{"time": b["t"], "open": round(b["o"], 2), "high": round(b["h"], 2),
-                  "low": round(b["l"], 2), "close": round(b["c"], 2)} for b in bars[-400:]],
+        "bars": [] if backtest else [
+            {"time": b["t"], "open": round(b["o"], 2), "high": round(b["h"], 2),
+             "low": round(b["l"], 2), "close": round(b["c"], 2)} for b in bars[-400:]],
     }

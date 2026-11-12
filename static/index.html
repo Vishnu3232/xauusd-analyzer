@@ -128,6 +128,24 @@
   .warns strong { color: var(--ink); }
   .warns ul { margin: 4px 0 0; padding-left: 18px; }
   .empty { color: var(--muted); font-size: 14px; }
+  .bt { margin-top: 16px; }
+  .bt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 4px; }
+  .bt-head h2 { margin: 0; }
+  .bt-head .sub { color: var(--ink-2); font-size: 14px; }
+  button.run { font: inherit; font-weight: 600; color: #fff; background: var(--up); border: 0; border-radius: 8px;
+               padding: 8px 14px; min-height: 38px; cursor: pointer; margin-left: auto; }
+  button.run:disabled { opacity: 0.55; cursor: default; }
+  button.run:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .bt-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+  @media (max-width: 900px) { .bt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } button.run { margin-left: 0; } }
+  .bt-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .bt-grid { grid-template-columns: minmax(0, 1fr); } }
+  .bt h3 { font-size: 14px; margin: 0 0 6px; font-weight: 600; }
+  #equity { width: 100%; height: 260px; }
+  .scroll { max-height: 320px; overflow: auto; }
+  .scroll table { min-width: 520px; }
+  .scroll th { position: sticky; top: 0; background: var(--surface); }
+  .bt ul.notes { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
   .error { border: 1px solid var(--critical); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; }
   footer { margin-top: 24px; color: var(--muted); font-size: 13px; }
   footer a { color: inherit; }
@@ -189,6 +207,15 @@
     <section class="card"><h2>USD news this week</h2><div id="news"></div></section>
   </div>
 
+  <section class="card bt">
+    <div class="bt-head">
+      <h2>Backtest</h2>
+      <span class="sub" id="bt-sub">How these rules would have done on past data.</span>
+      <button class="run" id="bt-run" type="button">Run backtest</button>
+    </div>
+    <div id="bt-body"><p class="empty" id="bt-status">Not run yet for this mode and timeframe.</p></div>
+  </section>
+
   <footer>
     Prices are gold futures from Yahoo Finance, about 10 minutes delayed, and differ from broker spot —
     enter your broker's price above to shift every level. This page is rule-based analysis for information
@@ -204,7 +231,8 @@
   var $ = function (id) { return document.getElementById(id); };
   var TFS = { conservative: ["H4", "D1"], standard: ["H1", "H4"], aggressive: ["H1"], scalp: ["M15", "M5"], swing: ["H4", "D1"] };
   var RISK = { conservative: 0.5, standard: 1.0, aggressive: 1.5, scalp: 0.5, swing: 1.0 };
-  var state = { data: null, chart: null, series: null, lines: [], timer: null, riskTouched: false };
+  var state = { data: null, chart: null, series: null, lines: [], timer: null, riskTouched: false,
+                bt: null, btChart: null, btSeries: null, btPoll: null };
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -268,6 +296,7 @@
     });
     state.series.applyOptions({ upColor: css("--up"), downColor: css("--down"), wickUpColor: css("--up"), wickDownColor: css("--down") });
     if (state.data) drawChart(false);
+    if (state.bt) renderBacktest(state.bt);
   }
 
   function drawChart(fit) {
@@ -454,7 +483,133 @@
     });
   }
 
+  function signed(n, digits) {
+    var v = Number(n).toFixed(digits === undefined ? 2 : digits);
+    return (n > 0 ? "+" : n < 0 ? "−" : "") + v.replace("-", "");
+  }
+
+  function backtestVerdict(r) {
+    var s = r.summary, breakeven = 100 / (1 + state.modeRR(r.mode));
+    if (!s.trades) return ["stop", "No trades in this period", "The rules never produced a filled trade, so there is nothing to judge."];
+    if (s.trades < 30) return ["wait", "Too few trades to judge", "Only " + s.trades + " trades. A result this small can easily be luck either way."];
+    var rate = "Won " + s.win_rate + "% of trades; break-even needs " + breakeven.toFixed(1) + "%.";
+    if (s.total_r > 0 && s.profit_factor !== null && s.profit_factor >= 1.2) return ["good", "Profitable in this period", rate];
+    if (s.profit_factor !== null && s.profit_factor >= 0.9 && s.total_r > -0.1 * s.trades)
+      return ["wait", "Roughly break-even — no clear edge", rate];
+    return ["stop", "Lost money in this period", rate];
+  }
+
+  function notes(r) {
+    var ul = el("ul", { class: "notes" });
+    r.assumptions.forEach(function (a) { ul.appendChild(el("li", { text: a })); });
+    return ul;
+  }
+
+  function renderBacktest(r) {
+    state.bt = r;
+    var box = $("bt-body"), s = r.summary;
+    box.textContent = "";
+    if (state.btChart) { state.btChart.remove(); state.btChart = null; }
+    $("bt-sub").textContent = r.timeframe + " · " + r.mode + " mode · " + r.period.from.slice(0, 10) + " to " +
+      r.period.to.slice(0, 10) + " (" + r.period.days + " days)";
+    var v = backtestVerdict(r), icon = v[0] === "stop" ? "✕" : v[0] === "good" ? "✓" : "…";
+    box.appendChild(el("div", { class: "verdict " + v[0] }, [
+      el("span", { class: "icon", "aria-hidden": "true", text: icon }), el("span", { class: "headline", text: v[1] })]));
+    box.appendChild(el("p", { class: "reason", text: v[2] + " R = the amount risked on one trade." }));
+    if (!s.trades) { box.appendChild(notes(r)); return; }
+
+    box.appendChild(el("div", { class: "bt-tiles" }, [
+      tile("Trades", String(s.trades), r.signals + " plans, " + s.trades + " filled"),
+      tile("Win rate", s.win_rate + "%", s.wins + " won · " + s.losses + " lost"),
+      tile("Average per trade", signed(s.avg_r, 2) + "R", "after spread"),
+      tile("Total", signed(s.total_r, 1) + "R", "all trades added up"),
+      tile("Profit factor", s.profit_factor === null ? "—" : s.profit_factor.toFixed(2), "won ÷ lost; above 1 is profit"),
+      tile("Worst drawdown", "−" + s.max_drawdown_r.toFixed(1) + "R", s.worst_losing_streak + " losses in a row at worst")
+    ]));
+
+    var left = el("div", {}, [el("h3", { text: "Running total, in R" }), el("div", { class: "hover", id: "bt-hover" }),
+      el("div", { id: "equity", role: "img", "aria-label": "Cumulative result in R after each trade" })]);
+    var dirTable = el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "Direction" }),
+      el("th", { class: "num", text: "Trades" }), el("th", { class: "num", text: "Win rate" }), el("th", { class: "num", text: "Total" })])])]);
+    var dirBody = el("tbody");
+    [["Long (buy)", r.by_direction.long], ["Short (sell)", r.by_direction.short]].forEach(function (row) {
+      var d = row[1];
+      dirBody.appendChild(el("tr", {}, [el("td", { text: row[0] }), el("td", { class: "num", text: String(d.trades) }),
+        el("td", { class: "num", text: d.trades ? d.win_rate + "%" : "—" }),
+        el("td", { class: "num", text: d.trades ? signed(d.total_r, 1) + "R" : "—" })]));
+    });
+    dirTable.appendChild(dirBody);
+    var right = el("div", {}, [el("h3", { text: "By direction" }), dirTable,
+      el("p", { class: "reason", text: "Exits: " + r.by_result.target + " at target, " + r.by_result.stop + " at stop, " +
+        r.by_result.time + " closed on the time limit." }), el("h3", { text: "What this test assumes", style: "margin-top:14px" }), notes(r)]);
+    box.appendChild(el("div", { class: "bt-grid" }, [left, right]));
+
+    var table = el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "Closed (UTC)" }), el("th", { text: "Side" }),
+      el("th", { class: "num", text: "Entry" }), el("th", { class: "num", text: "Exit" }), el("th", { class: "num", text: "Exit by" }),
+      el("th", { class: "num", text: "Result" })])])]);
+    var body = el("tbody");
+    r.trades.slice().reverse().forEach(function (t) {
+      body.appendChild(el("tr", {}, [el("td", { text: t.closed }), el("td", { text: t.bias }),
+        el("td", { class: "num", text: fmt(t.entry) }), el("td", { class: "num", text: fmt(t.exit) }),
+        el("td", { class: "num", text: t.result }), el("td", { class: "num", text: signed(t.r, 2) + "R" })]));
+    });
+    table.appendChild(body);
+    box.appendChild(el("h3", { text: "All " + r.trades.length + " trades, newest first", style: "margin-top:16px" }));
+    box.appendChild(el("div", { class: "scroll", tabindex: "0" }, [table]));
+
+    if (!window.LightweightCharts) return;
+    state.btChart = LightweightCharts.createChart($("equity"), {
+      autoSize: true,
+      layout: { background: { color: "transparent" }, textColor: css("--muted"), fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" },
+      grid: { vertLines: { visible: false }, horzLines: { color: css("--grid") } },
+      rightPriceScale: { borderColor: css("--axis") },
+      timeScale: { borderColor: css("--axis"), timeVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      handleScroll: false, handleScale: false
+    });
+    state.btSeries = state.btChart.addLineSeries({ color: css("--up"), lineWidth: 2, priceLineVisible: false,
+      lastValueVisible: true, crosshairMarkerRadius: 4,
+      priceFormat: { type: "custom", minMove: 0.1, formatter: function (p) { return signed(p, 1) + "R"; } } });
+    state.btSeries.setData([{ time: r.equity[0].time - 3600, value: 0 }].concat(r.equity));
+    state.btSeries.createPriceLine({ price: 0, color: css("--axis"), lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: false, title: "" });
+    state.btChart.timeScale().fitContent();
+    state.btChart.subscribeCrosshairMove(function (param) {
+      var p = param && param.seriesData ? param.seriesData.get(state.btSeries) : null;
+      $("bt-hover").textContent = p && param.time ? utc(param.time) + "   running total " + signed(p.value, 2) + "R" : "";
+    });
+  }
+
+  function backtestMessage(text) {
+    if (state.btChart) { state.btChart.remove(); state.btChart = null; }
+    state.bt = null;
+    var box = $("bt-body");
+    box.textContent = "";
+    box.appendChild(el("p", { class: "empty", text: text }));
+  }
+
+  function loadBacktest(start) {
+    clearTimeout(state.btPoll);
+    var tf = $("tf").value, mode = $("mode").value, idle = "How these rules would have done on past data.";
+    var url = "/api/backtest?tf=" + encodeURIComponent(tf) + "&mode=" + encodeURIComponent(mode) + (start ? "" : "&peek=1");
+    fetch(url).then(function (res) { return res.json(); }).then(function (job) {
+      if (tf !== $("tf").value || mode !== $("mode").value) return;  // selection changed meanwhile
+      var button = $("bt-run");
+      button.disabled = job.state === "running" || job.state === "unsupported";
+      button.textContent = job.state === "done" ? "Run again" : "Run backtest";
+      if (job.state === "done") { renderBacktest(job.result); }
+      else if (job.state === "running") {
+        $("bt-sub").textContent = idle;
+        backtestMessage("Running… " + Math.round(job.progress * 100) + "% — this can take a few minutes on the free server.");
+        state.btPoll = setTimeout(function () { loadBacktest(false); }, 3000);
+      } else if (job.state === "unsupported") { $("bt-sub").textContent = idle; backtestMessage(job.error); }
+      else if (job.state === "failed") { $("bt-sub").textContent = idle; backtestMessage("Backtest failed: " + job.error); }
+      else { $("bt-sub").textContent = idle; backtestMessage("Not run yet for " + tf + " · " + mode + " mode. A run replays the past year bar by bar."); }
+    }).catch(function () { backtestMessage("Could not reach the server. Try again."); $("bt-run").disabled = false; });
+  }
+
   function init() {
+    state.modeRR = function (mode) { return state.data && state.data.modes[mode] ? state.data.modes[mode].min_rr : 2; };
+    $("bt-run").addEventListener("click", function () { $("bt-run").disabled = true; loadBacktest(true); });
     var saved = { mode: load("mode"), tf: load("tf"), account: load("account"), broker: load("broker") };
     if (saved.mode && TFS[saved.mode]) $("mode").value = saved.mode;
     fillTimeframes();
@@ -464,14 +619,14 @@
     buildChart();
     if (!state.chart) $("chart").textContent = "Chart library failed to load.";
 
-    $("mode").addEventListener("change", function () { state.riskTouched = false; fillTimeframes(); store("mode", $("mode").value); store("tf", $("tf").value); refresh(true); });
-    $("tf").addEventListener("change", function () { store("tf", $("tf").value); refresh(true); });
+    $("mode").addEventListener("change", function () { state.riskTouched = false; fillTimeframes(); store("mode", $("mode").value); store("tf", $("tf").value); refresh(true); loadBacktest(false); });
+    $("tf").addEventListener("change", function () { store("tf", $("tf").value); refresh(true); loadBacktest(false); });
     $("risk").addEventListener("input", function () { state.riskTouched = true; if (state.data) renderPlan(); });
     $("account").addEventListener("input", function () { store("account", $("account").value); if (state.data) renderPlan(); });
     $("broker").addEventListener("input", function () { store("broker", $("broker").value); if (state.data) render(false); });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", restyleChart);
 
-    refresh(true);
+    refresh(true).then(function () { loadBacktest(false); });
     state.timer = setInterval(function () { if (!document.hidden) refresh(false); }, 60000);
   }
   init();

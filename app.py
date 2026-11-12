@@ -3,6 +3,7 @@ import os
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import backtest
 import engine
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
@@ -30,6 +31,23 @@ def analysis():
         app.logger.exception("analysis failed")
         return jsonify({"error": f"Market data is unavailable right now ({exc})."}), 503
     response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/backtest")
+def run_backtest():
+    tf = request.args.get("tf", "H1")
+    mode = request.args.get("mode", "standard")
+    peek = request.args.get("peek") == "1"
+    try:
+        job = backtest.start(tf, mode, peek=peek)
+    except ValueError as exc:
+        return jsonify({"state": "unsupported", "error": str(exc)}), 200
+    body = {"state": job["state"], "progress": job["progress"], "error": job["error"]}
+    if job["state"] == "done":
+        body["result"] = job["result"]
+    response = jsonify(body)
     response.headers["Cache-Control"] = "no-store"
     return response
 
