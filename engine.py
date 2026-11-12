@@ -16,8 +16,17 @@ from datetime import datetime, timezone
 
 GOLD = "GC=F"
 DXY = "DX-Y.NYB"
-CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-UA = {"User-Agent": "Mozilla/5.0"}
+CALENDAR_URLS = (
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
+)
+UA = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+    "Accept": "application/json,text/plain,*/*",
+}
+_calendar_failed_at = 0.0
+_calendar_error = ""
 
 # timeframe -> (yahoo interval, yahoo range, seconds per bar)
 FEEDS = {
@@ -128,9 +137,28 @@ def get_bars(symbol: str, tf: str):
 
 
 def get_calendar():
+    def fetch():
+        last_error = None
+        for url in CALENDAR_URLS:
+            try:
+                return _get_json(url)
+            except Exception as exc:  # noqa: BLE001 - try the mirror
+                last_error = exc
+        raise RuntimeError(f"calendar unavailable: {last_error}")
+
     def load():
+        # The calendar host rate-limits hard, so a failure is remembered for a
+        # few minutes instead of being retried on every page refresh.
+        global _calendar_failed_at, _calendar_error
+        if time.time() - _calendar_failed_at < 300:
+            raise RuntimeError(_calendar_error)
+        try:
+            raw = fetch()
+        except Exception as exc:
+            _calendar_failed_at, _calendar_error = time.time(), str(exc)
+            raise
         events = []
-        for e in _get_json(CALENDAR_URL):
+        for e in raw:
             if e.get("country") != "USD" or e.get("impact") != "High":
                 continue
             when = datetime.fromisoformat(e["date"]).astimezone(timezone.utc)
@@ -357,8 +385,9 @@ def analyze(tf: str = "H1", mode: str = "standard"):
                                else "Clear. No more high-impact USD releases this week.",
                                ["Source: Forex Factory weekly calendar, high-impact USD events only.",
                                 "Unscheduled headlines and Fed speakers are not covered."]))
-    except Exception:  # noqa: BLE001 - the calendar is optional
+    except Exception as exc:  # noqa: BLE001 - the calendar is optional
         news["available"] = False
+        news["error"] = str(exc)[:200]
         warnings.append("Economic calendar unavailable - check for USD news yourself.")
         steps.append(_step("news", "News gate", "warn", "Calendar unavailable - check manually."))
 
