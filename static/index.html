@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XAUUSD Analyzer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --up: #2a78d6;
+    --down: #e34948;
+    --good: #0ca30c;
+    --good-text: #006300;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --wash: rgba(11, 11, 11, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #f0efec;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --up: #3987e5;
+      --down: #e66767;
+      --good: #0ca30c;
+      --good-text: #0ca30c;
+      --warning: #fab219;
+      --critical: #e66767;
+      --wash: rgba(255, 255, 255, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--ink-2);
+       text-transform: uppercase; letter-spacing: 0.04em; }
+  .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+  .top .sub { color: var(--ink-2); font-size: 13px; }
+  .top .updated { margin-left: auto; color: var(--muted); font-size: 13px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field label { font-size: 12px; color: var(--ink-2); }
+  .field select, .field input {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--axis); border-radius: 8px; padding: 7px 10px; min-height: 38px; width: 150px;
+  }
+  .field select:focus-visible, .field input:focus-visible { outline: 2px solid var(--up); outline-offset: 1px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+  .layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .lower { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; align-items: start; }
+  @media (max-width: 900px) {
+    .layout, .lower { grid-template-columns: minmax(0, 1fr); }
+    .field select, .field input { width: 100%; }
+    .field { flex: 1 1 130px; }
+  }
+
+  .verdict { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .verdict .icon { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+                   color: #fff; font-weight: 700; font-size: 15px; flex: none; }
+  .verdict.good .icon { background: var(--good); }
+  .verdict.wait .icon { background: var(--warning); color: #0b0b0b; }
+  .verdict.stop .icon { background: var(--critical); }
+  .verdict .headline { font-size: 18px; font-weight: 650; line-height: 1.3; }
+  .reason { color: var(--ink-2); margin: 6px 0 0; font-size: 14px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .tile { background: var(--wash); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .tile .k { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .tile .v { font-size: 20px; font-weight: 650; overflow-wrap: anywhere; }
+  .tile .n { font-size: 12px; color: var(--muted); }
+  .swatch { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+
+  .price-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .price { font-size: 30px; font-weight: 650; }
+  .hover { color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; min-height: 20px; }
+  #chart { width: 100%; height: 440px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .box { width: 10px; height: 10px; border-radius: 2px; }
+
+  ul.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  ul.steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; }
+  .badge { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+           font-size: 12px; font-weight: 700; color: #fff; margin-top: 1px; }
+  .badge.pass { background: var(--good); }
+  .badge.warn { background: var(--warning); color: #0b0b0b; }
+  .badge.block { background: var(--critical); }
+  .step-title { font-weight: 600; }
+  .step-title small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .step-sum { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; }
+  details { margin-top: 2px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  details ul { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px 0; }
+  td { padding: 6px 0; border-top: 1px solid var(--grid); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .group td { border-top: 0; color: var(--muted); font-size: 12px; padding-top: 12px; }
+  .checks { list-style: none; margin: 14px 0 0; padding: 0; font-size: 14px; display: grid; gap: 4px; }
+  .checks li { display: flex; gap: 8px; color: var(--ink-2); }
+  .checks .mark { width: 16px; flex: none; font-weight: 700; }
+  .checks .yes .mark { color: var(--good-text); }
+  .checks .no .mark { color: var(--critical); }
+  .warns { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--wash); font-size: 14px; color: var(--ink-2); }
+  .warns strong { color: var(--ink); }
+  .warns ul { margin: 4px 0 0; padding-left: 18px; }
+  .empty { color: var(--muted); font-size: 14px; }
+  .error { border: 1px solid var(--critical); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 13px; }
+  footer a { color: inherit; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>XAUUSD Analyzer</h1>
+    <span class="sub" id="sub">Gold trade-plan pipeline</span>
+    <span class="updated" id="updated">Loading…</span>
+  </div>
+
+  <div class="controls">
+    <div class="field"><label for="mode">Mode</label>
+      <select id="mode">
+        <option value="standard">Standard</option>
+        <option value="conservative">Conservative</option>
+        <option value="aggressive">Aggressive</option>
+        <option value="scalp">Scalp</option>
+        <option value="swing">Swing</option>
+      </select></div>
+    <div class="field"><label for="tf">Timeframe</label><select id="tf"></select></div>
+    <div class="field"><label for="account">Account size (USD)</label>
+      <input id="account" type="number" min="0" step="100" inputmode="decimal" value="10000"></div>
+    <div class="field"><label for="risk">Risk per trade (%)</label>
+      <input id="risk" type="number" min="0" max="10" step="0.1" inputmode="decimal"></div>
+    <div class="field"><label for="broker">Your broker's gold price</label>
+      <input id="broker" type="number" min="0" step="0.01" inputmode="decimal" placeholder="optional"></div>
+  </div>
+
+  <div class="error" id="error" hidden></div>
+
+  <div class="layout">
+    <section class="card">
+      <div class="price-row">
+        <span class="price" id="price">—</span>
+        <span class="sub" id="price-note"></span>
+      </div>
+      <div class="hover" id="hover"></div>
+      <div id="chart" role="img" aria-label="Gold candlestick chart with entry, stop and target levels"></div>
+      <div class="legend">
+        <span><i class="box" style="background:var(--up)"></i>Up candle</span>
+        <span><i class="box" style="background:var(--down)"></i>Down candle</span>
+        <span id="legend-lines"></span>
+      </div>
+    </section>
+
+    <section class="card" id="plan-card">
+      <h2>Trade plan</h2>
+      <div id="plan"><p class="empty">Loading…</p></div>
+    </section>
+  </div>
+
+  <div class="lower">
+    <section class="card"><h2>Pipeline</h2><ul class="steps" id="steps"></ul></section>
+    <section class="card"><h2>Liquidity levels</h2><div id="levels"></div></section>
+    <section class="card"><h2>USD news this week</h2><div id="news"></div></section>
+  </div>
+
+  <footer>
+    Prices are gold futures from Yahoo Finance, about 10 minutes delayed, and differ from broker spot —
+    enter your broker's price above to shift every level. This page is rule-based analysis for information
+    only; it is not financial advice and places no trades. Charts by
+    <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView Lightweight Charts</a>.
+  </footer>
+</main>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var TFS = { conservative: ["H4", "D1"], standard: ["H1", "H4"], aggressive: ["H1"], scalp: ["M15", "M5"], swing: ["H4", "D1"] };
+  var RISK = { conservative: 0.5, standard: 1.0, aggressive: 1.5, scalp: 0.5, swing: 1.0 };
+  var state = { data: null, chart: null, series: null, lines: [], timer: null, riskTouched: false };
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k]; else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function fmt(n) { return Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function utc(ts) {
+    return new Date(ts * 1000).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) + " UTC";
+  }
+  function store(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* storage blocked */ } }
+  function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+
+  // Offset between the user's broker price and the feed price, applied to every level.
+  function offset() {
+    var broker = parseFloat($("broker").value);
+    if (!state.data || !isFinite(broker) || broker <= 0) return 0;
+    return broker - state.data.price;
+  }
+
+  function fillTimeframes() {
+    var mode = $("mode").value, tf = $("tf"), previous = tf.value;
+    tf.textContent = "";
+    TFS[mode].forEach(function (name) { tf.appendChild(el("option", { value: name, text: name })); });
+    if (TFS[mode].indexOf(previous) >= 0) tf.value = previous;
+    if (!state.riskTouched) $("risk").value = RISK[mode];
+  }
+
+  function buildChart() {
+    if (!window.LightweightCharts) return;
+    state.chart = LightweightCharts.createChart($("chart"), {
+      autoSize: true,
+      layout: { background: { color: "transparent" }, textColor: css("--muted"), fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" },
+      grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
+      rightPriceScale: { borderColor: css("--axis") },
+      timeScale: { borderColor: css("--axis"), timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    });
+    state.series = state.chart.addCandlestickSeries({
+      upColor: css("--up"), downColor: css("--down"), borderVisible: false,
+      wickUpColor: css("--up"), wickDownColor: css("--down"), priceLineVisible: false
+    });
+    state.chart.subscribeCrosshairMove(function (param) {
+      var bar = param && param.seriesData ? param.seriesData.get(state.series) : null;
+      if (!bar || !param.time) { $("hover").textContent = ""; return; }
+      $("hover").textContent = utc(param.time) + "   O " + fmt(bar.open) + "   H " + fmt(bar.high) +
+        "   L " + fmt(bar.low) + "   C " + fmt(bar.close);
+    });
+  }
+
+  function restyleChart() {
+    if (!state.chart) return;
+    state.chart.applyOptions({
+      layout: { textColor: css("--muted") },
+      grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
+      rightPriceScale: { borderColor: css("--axis") }, timeScale: { borderColor: css("--axis") }
+    });
+    state.series.applyOptions({ upColor: css("--up"), downColor: css("--down"), wickUpColor: css("--up"), wickDownColor: css("--down") });
+    if (state.data) drawChart(false);
+  }
+
+  function drawChart(fit) {
+    if (!state.series) return;
+    var d = state.data, off = offset(), S = LightweightCharts.LineStyle;
+    state.series.setData(d.bars.map(function (b) {
+      return { time: b.time, open: b.open + off, high: b.high + off, low: b.low + off, close: b.close + off };
+    }));
+    state.lines.forEach(function (line) { state.series.removePriceLine(line); });
+    state.lines = [];
+    var legend = [];
+    function line(price, color, style, title) {
+      state.lines.push(state.series.createPriceLine({ price: price + off, color: color, lineWidth: 2, lineStyle: style, axisLabelVisible: true, title: title }));
+    }
+    if (d.plan) {
+      if (d.plan.zone) {
+        line(d.plan.zone.top, css("--muted"), S.Dotted, "Gap top");
+        line(d.plan.zone.bottom, css("--muted"), S.Dotted, "Gap bottom");
+      }
+      line(d.plan.entry, css("--ink"), S.Solid, "Entry");
+      line(d.plan.stop_loss, css("--critical"), S.Dashed, "Stop");
+      line(d.plan.take_profit_1, css("--good"), S.Dashed, "TP1");
+      line(d.plan.take_profit_2, css("--good"), S.Dashed, "TP2");
+      legend = ["Entry: solid line", "Stop / targets: dashed", "Entry gap: dotted"];
+    }
+    $("legend-lines").textContent = legend.join(" · ");
+    if (fit) {
+      var n = d.bars.length;
+      state.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 110), to: n + 6 });
+    }
+  }
+
+  function tile(label, value, note, color) {
+    return el("div", { class: "tile" }, [
+      el("div", { class: "k" }, [color ? el("i", { class: "swatch", style: "background:" + color }) : null, el("span", { text: label })]),
+      el("div", { class: "v", text: value }),
+      note ? el("div", { class: "n", text: note }) : null
+    ]);
+  }
+
+  function renderPlan() {
+    var d = state.data, box = $("plan"), off = offset();
+    box.textContent = "";
+    var kind = d.verdict === "NO_TRADE" ? "stop" : d.verdict === "IN_ZONE" ? "good" : "wait";
+    var icon = kind === "stop" ? "✕" : kind === "good" ? "✓" : "…";
+    box.appendChild(el("div", { class: "verdict " + kind }, [
+      el("span", { class: "icon", "aria-hidden": "true", text: icon }),
+      el("span", { class: "headline", text: d.headline })
+    ]));
+    if (d.blocks.length) {
+      d.blocks.forEach(function (b) { box.appendChild(el("p", { class: "reason", text: b })); });
+    } else if (d.plan) {
+      box.appendChild(el("p", { class: "reason", text: d.plan.in_zone
+        ? "Price is inside the entry zone. Enter only after a rejection candle on a lower timeframe."
+        : "Entry is " + fmt(d.plan.distance) + " points from the current price. No trade at the current price." }));
+    }
+
+    if (d.plan && !d.blocks.length) {
+      var p = d.plan;
+      var account = parseFloat($("account").value), riskPct = parseFloat($("risk").value);
+      var lotsText = "—", lotsNote = "Enter account size and risk";
+      if (isFinite(account) && account > 0 && isFinite(riskPct) && riskPct > 0) {
+        var riskUsd = account * riskPct / 100;
+        var perLot = p.sl_points * d.sizing.usd_per_point_per_lot;
+        var lots = Math.floor(riskUsd / perLot * 100) / 100;
+        if (lots >= 0.01) {
+          lotsText = lots.toFixed(2) + " lots";
+          lotsNote = "Risks $" + fmt(lots * perLot) + " of $" + fmt(riskUsd) + " allowed";
+        } else {
+          lotsText = "Too small";
+          lotsNote = "Minimum 0.01 lot risks $" + fmt(0.01 * perLot) + " (" + (0.01 * perLot / account * 100).toFixed(1) + "% of account)";
+        }
+      }
+      box.appendChild(el("div", { class: "tiles" }, [
+        tile("Direction", p.bias === "short" ? "Short (sell)" : "Long (buy)", "Grade " + p.setup_grade + " · " + p.score + "/6 checks"),
+        tile("Entry", fmt(p.entry + off), p.entry_source, css("--ink")),
+        tile("Stop loss", fmt(p.stop_loss + off), fmt(p.sl_points) + " points", css("--critical")),
+        tile("Position size", lotsText, lotsNote),
+        tile("Target 1", fmt(p.take_profit_1 + off), p.risk_reward.toFixed(1) + "R", css("--good")),
+        tile("Target 2", fmt(p.take_profit_2 + off), p.risk_reward_tp2.toFixed(1) + "R · " + p.tp2_basis, css("--good"))
+      ]));
+      box.appendChild(el("p", { class: "reason", text: "Invalid if: " + p.invalidation.replace(/[\d.]+$/, fmt(p.stop_loss + off)) + "." }));
+      var checks = el("ul", { class: "checks" });
+      p.checks.forEach(function (c) {
+        checks.appendChild(el("li", { class: c.ok ? "yes" : "no" }, [
+          el("span", { class: "mark", "aria-hidden": "true", text: c.ok ? "✓" : "✕" }),
+          el("span", { text: (c.ok ? "" : "Failed: ") + c.name })
+        ]));
+      });
+      box.appendChild(checks);
+    }
+    if (d.warnings.length) {
+      var list = el("ul");
+      d.warnings.forEach(function (w) { list.appendChild(el("li", { text: w })); });
+      box.appendChild(el("div", { class: "warns" }, [el("strong", { text: "Watch out" }), list]));
+    }
+  }
+
+  function renderSteps() {
+    var d = state.data, list = $("steps");
+    list.textContent = "";
+    var marks = { pass: "✓", warn: "!", block: "✕" }, words = { pass: "OK", warn: "Caution", block: "Blocked" };
+    d.steps.forEach(function (s) {
+      var body = el("div", {}, [
+        el("div", { class: "step-title" }, [el("span", { text: s.title }), el("small", { text: words[s.status] })]),
+        el("div", { class: "step-sum", text: s.summary })
+      ]);
+      if (s.details.length) {
+        var ul = el("ul");
+        s.details.forEach(function (t) { ul.appendChild(el("li", { text: t })); });
+        body.appendChild(el("details", {}, [el("summary", { text: "Details" }), ul]));
+      }
+      list.appendChild(el("li", {}, [el("span", { class: "badge " + s.status, "aria-hidden": "true", text: marks[s.status] }), body]));
+    });
+  }
+
+  function renderLevels() {
+    var d = state.data, box = $("levels"), off = offset();
+    box.textContent = "";
+    var table = el("table", {}, [el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Level" }), el("th", { class: "num", text: "Price" }), el("th", { class: "num", text: "Distance" })])])]);
+    var body = el("tbody");
+    function group(title, rows) {
+      if (!rows.length) return;
+      body.appendChild(el("tr", { class: "group" }, [el("td", { colspan: "3", text: title })]));
+      rows.forEach(function (r) {
+        var dist = r.price - d.price;
+        body.appendChild(el("tr", {}, [el("td", { text: r.label }), el("td", { class: "num", text: fmt(r.price + off) }),
+          el("td", { class: "num", text: (dist > 0 ? "+" : "−") + fmt(Math.abs(dist)) })]));
+      });
+    }
+    group("Above price — buy stops rest here", d.liquidity.above.slice().reverse());
+    group("Below price — sell stops rest here", d.liquidity.below);
+    table.appendChild(body);
+    box.appendChild(table);
+    var g = d.gold_context, dxy = g.dxy && g.dxy.price ? g.dxy.price + " (" + g.dxy.bias + ")" : "unavailable";
+    box.appendChild(el("p", { class: "reason", text: "H1 ATR " + g.atr_h1 + " pts · Dollar index " + dxy + " · " + g.session }));
+  }
+
+  function renderNews() {
+    var d = state.data, box = $("news");
+    box.textContent = "";
+    if (!d.news.available) { box.appendChild(el("p", { class: "empty", text: "Calendar unavailable — check USD news manually." })); return; }
+    if (!d.news.events.length) { box.appendChild(el("p", { class: "empty", text: "No high-impact USD releases this week." })); return; }
+    var table = el("table", {}, [el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Event" }), el("th", { text: "When" }), el("th", { class: "num", text: "Forecast" })])])]);
+    var body = el("tbody");
+    d.news.events.forEach(function (e) {
+      var past = e.time < d.generated_at;
+      var row = el("tr", {}, [el("td", { text: e.title + (past ? " (done)" : "") }), el("td", { text: e.when }),
+        el("td", { class: "num", text: e.forecast || "—" })]);
+      if (past) row.style.color = css("--muted");
+      body.appendChild(row);
+    });
+    table.appendChild(body);
+    box.appendChild(table);
+    box.appendChild(el("p", { class: "reason", text: "No plan from 2 hours before to 1 hour after each release." }));
+  }
+
+  function render(fit) {
+    var d = state.data, off = offset();
+    $("price").textContent = fmt(d.price + off);
+    $("price-note").textContent = off
+      ? "your broker · feed " + fmt(d.price) + " · levels shifted " + (off > 0 ? "+" : "−") + fmt(Math.abs(off))
+      : d.feed_name + " futures · quote " + utc(d.quote_time);
+    $("sub").textContent = d.timeframe + " · " + d.mode + " mode · bias from " + d.higher_timeframe;
+    $("updated").textContent = "Updated " + utc(d.generated_at) + " · refreshes every minute";
+    drawChart(fit);
+    renderPlan(); renderSteps(); renderLevels(); renderNews();
+  }
+
+  function refresh(fit) {
+    var url = "/api/analysis?tf=" + encodeURIComponent($("tf").value) + "&mode=" + encodeURIComponent($("mode").value);
+    return fetch(url).then(function (res) {
+      return res.json().then(function (body) { if (!res.ok) throw new Error(body.error || "Request failed"); return body; });
+    }).then(function (data) {
+      $("error").hidden = true;
+      state.data = data;
+      render(fit);
+    }).catch(function (err) {
+      $("error").hidden = false;
+      $("error").textContent = "Could not load analysis: " + err.message + " Retrying in a minute.";
+      $("updated").textContent = "Update failed";
+    });
+  }
+
+  function init() {
+    var saved = { mode: load("mode"), tf: load("tf"), account: load("account"), broker: load("broker") };
+    if (saved.mode && TFS[saved.mode]) $("mode").value = saved.mode;
+    fillTimeframes();
+    if (saved.tf && TFS[$("mode").value].indexOf(saved.tf) >= 0) $("tf").value = saved.tf;
+    if (saved.account) $("account").value = saved.account;
+    if (saved.broker) $("broker").value = saved.broker;
+    buildChart();
+    if (!state.chart) $("chart").textContent = "Chart library failed to load.";
+
+    $("mode").addEventListener("change", function () { state.riskTouched = false; fillTimeframes(); store("mode", $("mode").value); store("tf", $("tf").value); refresh(true); });
+    $("tf").addEventListener("change", function () { store("tf", $("tf").value); refresh(true); });
+    $("risk").addEventListener("input", function () { state.riskTouched = true; if (state.data) renderPlan(); });
+    $("account").addEventListener("input", function () { store("account", $("account").value); if (state.data) renderPlan(); });
+    $("broker").addEventListener("input", function () { store("broker", $("broker").value); if (state.data) render(false); });
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", restyleChart);
+
+    refresh(true);
+    state.timer = setInterval(function () { if (!document.hidden) refresh(false); }, 60000);
+  }
+  init();
+})();
+</script>
+</body>
+</html>
